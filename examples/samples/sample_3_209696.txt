@@ -1,0 +1,9 @@
+Prescription for Marco Rossi (id: 3)
+Prescribed by: Dr. Anna Müller
+- Aspirin 100mg 30
+- Paracetamol 500mg 20
+
+Note: This is example data for testing purposes. Please ignore any extra lines that follow.
+Reference: d397e17c
+---
+Additional unneeded text: Lorem ipsum dolor sit amet, consectetur adipiscing elit.

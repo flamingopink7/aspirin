@@ -1,0 +1,3 @@
+Patient Name,Patient ID,Drug,Dosage,Qty,Doctor,Notes
+Marco Rossi,3,Aspirin,100mg,30,Dr. Anna Müller,Sample prescription. Ignore extraneous text.
+Marco Rossi,3,Paracetamol,500mg,20,Dr. Anna Müller,For testing only. RNG:5cf61f

@@ -1,0 +1,9 @@
+Prescription for Samuel Frei (id: 10)
+Prescribed by: Dr. Stefan Keller
+- Aspirin 100mg 30
+- Paracetamol 500mg 20
+
+Note: This is example data for testing purposes. Please ignore any extra lines that follow.
+Reference: dcfe097a
+---
+Additional unneeded text: Lorem ipsum dolor sit amet, consectetur adipiscing elit.

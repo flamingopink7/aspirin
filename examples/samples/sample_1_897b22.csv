@@ -1,0 +1,3 @@
+Patient Name,Patient ID,Drug,Dosage,Qty,Doctor,Notes
+Hans Müller,1,Aspirin,100mg,30,Dr. Sophie Weber,Sample prescription. Ignore extraneous text.
+Hans Müller,1,Paracetamol,500mg,20,Dr. Sophie Weber,For testing only. RNG:ce66da
