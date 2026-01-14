@@ -1,4 +1,5 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Body
+from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 import sqlite3
 from pathlib import Path
@@ -50,6 +51,20 @@ client = OpenAI(
 
 app = FastAPI()
 
+# Pydantic models
+class MessageSchema(BaseModel):
+    client_id: str
+    sender_id: str
+    recipient_id: str
+    content: str | None = None
+    message_type: str = "message"
+    is_important: bool = False
+    due_date: str | None = None
+    status: str = "pending"
+    file_path: str | None = None
+    file_name: str | None = None
+
+
 # CORS settings
 origins = [
     'http://localhost:5173',
@@ -59,7 +74,7 @@ origins = [
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -753,166 +768,142 @@ async def analyze_eml(file: UploadFile = File(...)):
 @app.post("/init_db")
 async def init_db():
     """Create sample `doktores` table and populate five entries."""
-    conn = sqlite3.connect(str(DB_PATH))
-    cur = conn.cursor()
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS doktores (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            specialty TEXT NOT NULL,
-            email TEXT
-        )
-        """
-    )
-    # replace existing sample data
-    cur.execute("DELETE FROM doktores")
-    sample = [
-        (1, "Dr. Anna Müller", "Cardiology", "anna.mueller@clinic.ch"),
-        (2, "Dr. Lukas Meier", "Dermatology", "lukas.meier@clinic.ch"),
-        (3, "Dr. Martina Schmid", "Pediatrics", "martina.schmid@clinic.ch"),
-        (4, "Dr. Stefan Keller", "Neurology", "stefan.keller@clinic.ch"),
-        (5, "Dr. Sophie Weber", "Orthopedics", "sophie.weber@clinic.ch"),
-    ]
-    cur.executemany("INSERT INTO doktores (id, name, specialty, email) VALUES (?, ?, ?, ?)", sample)
-
-    # create patients table and insert 10 sample patients
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS patients (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            address TEXT,
-            age INTEGER,
-            conditions TEXT
-        )
-        """
-    )
-    cur.execute("DELETE FROM patients")
-    patients = [
-        (1, "Hans Müller", "Bahnhofstrasse 10, Zürich", 54, "hypertension, asthma"),
-        (2, "Monika Steiner", "Gartenweg 4, Bern", 68, "allergies"),
-        (3, "Marco Rossi", "Via Nassa 12, Lugano", 52, "diabetes"),
-        (4, "Aisha Huber", "Wiesenstrasse 88, Lausanne", 89, "heart disease"),
-        (5, "Pierre Dubois", "Rue de la Paix 12, Genève", 65, "arthritis, hypertension"),
-        (6, "Olivia Meier", "Birkenweg 210, Luzern", 71, "migraine"),
-        (7, "Noah Schmid", "Lindenweg 3, St. Gallen", 76, "asthma, high cholesterol"),
-        (8, "Emma Weber", "Hafengasse 56, Basel", 93, "diabetes, arthritis"),
-        (9, "Marta Novak", "Kirchgasse 9, Winterthur", 58, "cardiac arrhythmia"),
-        (10, "Samuel Frei", "Tuchlaedeli 77, Thun", 76, "high cholesterol"),
-    ]
-    cur.executemany("INSERT INTO patients (id, name, address, age, conditions) VALUES (?, ?, ?, ?, ?)", patients)
-
-    # create users/login table and insert entries for doctors, 5 nurses, and 2 admins
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY,
-            role TEXT NOT NULL,
-            password TEXT NOT NULL
-        )
-        """
-    )
-    cur.execute("DELETE FROM users")
-    users = [
-        # doctors (ids 1-5)
-        (1, "doctor", "doc1pass"),
-        (2, "doctor", "doc2pass"),
-        (3, "doctor", "doc3pass"),
-        (4, "doctor", "doc4pass"),
-        (5, "doctor", "doc5pass"),
-        # nurses (ids 1001-1005)
-        (1001, "nurse", "nurse1pass"),
-        (1002, "nurse", "nurse2pass"),
-        (1003, "nurse", "nurse3pass"),
-        (1004, "nurse", "nurse4pass"),
-        (1005, "nurse", "nurse5pass"),
-        # admins (ids 2001-2002)
-        (2001, "admin", "admin1pass"),
-        (2002, "admin", "admin2pass"),
-    ]
-    cur.executemany("INSERT INTO users (id, role, password) VALUES (?, ?, ?)", users)
-
-    # create documents table to store PDFs per patient (content stored as BLOB)
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS documents (
-            id INTEGER PRIMARY KEY,
-            patient_id INTEGER NOT NULL,
-            filename TEXT NOT NULL,
-            content BLOB,
-            size INTEGER NOT NULL,
-            attachment_path TEXT,
-            uploaded_at TEXT DEFAULT (datetime('now')),
-            FOREIGN KEY(patient_id) REFERENCES patients(id)
-        )
-        """
-    )
-    cur.execute("DELETE FROM documents")
-
-    # create emails table to store generated emails with PDF attachments
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS emails (
-            id INTEGER PRIMARY KEY,
-            patient_id INTEGER,
-            subject TEXT NOT NULL,
-            body TEXT,
-            attachment_filename TEXT,
-            attachment_content BLOB,
-            attachment_path TEXT,
-            attachment_size INTEGER,
-            created_at TEXT DEFAULT (datetime('now')),
-            FOREIGN KEY(patient_id) REFERENCES patients(id)
-        )
-        """
-    )
-    cur.execute("DELETE FROM emails")
-
-    # ensure storage directories exist (for attachments)
-    STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-    STORAGE_DOCS_DIR.mkdir(parents=True, exist_ok=True)
-    STORAGE_EMAILS_DIR.mkdir(parents=True, exist_ok=True)
-
-    # Migration helpers: make sure new columns exist if this DB was created earlier
-    def _ensure_column(table: str, column: str, ddl: str):
-        cur.execute(f"PRAGMA table_info({table})")
-        cols = [r[1] for r in cur.fetchall()]
-        if column not in cols:
-            cur.execute(ddl)
-
-    # ensure patients table has a 'code' column
-    cur.execute("PRAGMA table_info(patients)")
-    patient_cols = [r[1] for r in cur.fetchall()]
-    if 'code' not in patient_cols:
-        # SQLite doesn't allow adding a UNIQUE column via ALTER TABLE, so add it
-        # as a normal column and then create a UNIQUE index to enforce uniqueness.
-        cur.execute("ALTER TABLE patients ADD COLUMN code TEXT")
+    print("Starting init_db...")
+    import time
+    max_retries = 3
+    for attempt in range(max_retries):
         try:
-            cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_patients_code ON patients(code)")
-        except sqlite3.OperationalError:
-            # be defensive: if index creation fails for any reason, continue
-            pass
+            # Add timeout to handle 'database is locked' errors
+            conn = sqlite3.connect(str(DB_PATH), timeout=30)
+            cur = conn.cursor()
+            
+            print("Initializing doktores table...")
+            cur.execute("CREATE TABLE IF NOT EXISTS doktores (id INTEGER PRIMARY KEY, name TEXT NOT NULL, specialty TEXT NOT NULL, email TEXT)")
+            cur.execute("DELETE FROM doktores")
+            sample_doctors = [
+                (1, "Dr. Anna Müller", "Cardiology", "anna.mueller@clinic.ch"),
+                (2, "Dr. Lukas Meier", "Dermatology", "lukas.meier@clinic.ch"),
+                (3, "Dr. Martina Schmid", "Pediatrics", "martina.schmid@clinic.ch"),
+                (4, "Dr. Stefan Keller", "Neurology", "stefan.keller@clinic.ch"),
+                (5, "Dr. Sophie Weber", "Orthopedics", "sophie.weber@clinic.ch"),
+            ]
+            cur.executemany("INSERT INTO doktores (id, name, specialty, email) VALUES (?, ?, ?, ?)", sample_doctors)
 
-    # populate codes for patients if missing (ensure uniqueness)
-    cur.execute("SELECT id, code FROM patients")
-    rows = cur.fetchall()
-    existing = {r[1] for r in rows if r[1]}
-    for r in rows:
-        pid = r[0]
-        code = r[1]
-        if not code:
-            # generate unique code
-            for _ in range(100):
-                c = _generate_code(5)
-                if c not in existing:
-                    existing.add(c)
-                    cur.execute("UPDATE patients SET code = ? WHERE id = ?", (c, pid))
-                    break
+            print("Initializing patients table...")
+            cur.execute("CREATE TABLE IF NOT EXISTS patients (id INTEGER PRIMARY KEY, name TEXT NOT NULL, address TEXT, age INTEGER, conditions TEXT)")
+            cur.execute("DELETE FROM patients")
+            sample_patients = [
+                (1, "Hans Müller", "Bahnhofstrasse 10, Zürich", 54, "hypertension, asthma"),
+                (2, "Monika Steiner", "Gartenweg 4, Bern", 68, "allergies"),
+                (3, "Marco Rossi", "Via Nassa 12, Lugano", 52, "diabetes"),
+                (4, "Aisha Huber", "Wiesenstrasse 88, Lausanne", 89, "heart disease"),
+                (5, "Pierre Dubois", "Rue de la Paix 12, Genève", 65, "arthritis, hypertension"),
+                (6, "Olivia Meier", "Birkenweg 210, Luzern", 71, "migraine"),
+                (7, "Noah Schmid", "Lindenweg 3, St. Gallen", 76, "asthma, high cholesterol"),
+                (8, "Emma Weber", "Hafengasse 56, Basel", 93, "diabetes, arthritis"),
+                (9, "Marta Novak", "Kirchgasse 9, Winterthur", 58, "cardiac arrhythmia"),
+                (10, "Samuel Frei", "Tuchlaedeli 77, Thun", 76, "high cholesterol"),
+            ]
+            cur.executemany("INSERT INTO patients (id, name, address, age, conditions) VALUES (?, ?, ?, ?, ?)", sample_patients)
 
-    conn.commit()
-    conn.close()
-    return {"ok": True, "db_path": str(DB_PATH)}
+            print("Initializing users table...")
+            cur.execute("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, role TEXT NOT NULL, password TEXT NOT NULL)")
+            cur.execute("DELETE FROM users")
+            sample_users = [
+                (1, "doctor", "doc1pass"), (2, "doctor", "doc2pass"), (3, "doctor", "doc3pass"), (4, "doctor", "doc4pass"), (5, "doctor", "doc5pass"),
+                (1001, "nurse", "nurse1pass"), (1002, "nurse", "nurse2pass"), (1003, "nurse", "nurse3pass"), (1004, "nurse", "nurse4pass"), (1005, "nurse", "nurse5pass"),
+                (2001, "admin", "admin1pass"), (2002, "admin", "admin2pass"),
+            ]
+            cur.executemany("INSERT INTO users (id, role, password) VALUES (?, ?, ?)", sample_users)
+
+            print("Initializing documents and emails tables...")
+            cur.execute("CREATE TABLE IF NOT EXISTS documents (id INTEGER PRIMARY KEY, patient_id INTEGER NOT NULL, filename TEXT NOT NULL, content BLOB, size INTEGER NOT NULL, attachment_path TEXT, uploaded_at TEXT DEFAULT (datetime('now')), FOREIGN KEY(patient_id) REFERENCES patients(id))")
+            cur.execute("DELETE FROM documents")
+            cur.execute("CREATE TABLE IF NOT EXISTS emails (id INTEGER PRIMARY KEY, patient_id INTEGER, subject TEXT NOT NULL, body TEXT, attachment_filename TEXT, attachment_content BLOB, attachment_path TEXT, attachment_size INTEGER, created_at TEXT DEFAULT (datetime('now')), FOREIGN KEY(patient_id) REFERENCES patients(id))")
+            cur.execute("DELETE FROM emails")
+
+            print("Initializing chat_messages table...")
+            cur.execute("DROP TABLE IF EXISTS chat_messages")
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS chat_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    client_id TEXT NOT NULL,
+                    sender_id TEXT NOT NULL,
+                    recipient_id TEXT NOT NULL,
+                    message_type TEXT NOT NULL DEFAULT 'message',
+                    content TEXT,
+                    is_important BOOLEAN DEFAULT 0,
+                    due_date TEXT,
+                    status TEXT DEFAULT 'pending',
+                    file_path TEXT,
+                    file_name TEXT,
+                    created_at TEXT DEFAULT (datetime('now'))
+                )
+            """)
+            cur.execute("DELETE FROM chat_messages")
+
+            print("Setting up storage directories...")
+            STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+            STORAGE_DOCS_DIR.mkdir(parents=True, exist_ok=True)
+            STORAGE_EMAILS_DIR.mkdir(parents=True, exist_ok=True)
+
+            print("Ensuring patient codes...")
+            cur.execute("PRAGMA table_info(patients)")
+            if 'code' not in [r[1] for r in cur.fetchall()]:
+                cur.execute("ALTER TABLE patients ADD COLUMN code TEXT")
+                cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_patients_code ON patients(code)")
+
+            cur.execute("SELECT id FROM patients")
+            pids = [r[0] for r in cur.fetchall()]
+            existing_codes = set()
+            for pid in pids:
+                new_code = _generate_code(5)
+                while new_code in existing_codes:
+                    new_code = _generate_code(5)
+                existing_codes.add(new_code)
+                cur.execute("UPDATE patients SET code = ? WHERE id = ?", (new_code, pid))
+
+            print("Initializing patient_doctors table...")
+            cur.execute("CREATE TABLE IF NOT EXISTS patient_doctors (patient_id INTEGER NOT NULL, doctor_id INTEGER NOT NULL, PRIMARY KEY (patient_id, doctor_id), FOREIGN KEY(patient_id) REFERENCES patients(id), FOREIGN KEY(doctor_id) REFERENCES doktores(id))")
+            cur.execute("DELETE FROM patient_doctors")
+
+            print("Populating patient_doctors assignments...")
+            cur.execute("SELECT id FROM doktores")
+            dr_ids = [r[0] for r in cur.fetchall()]
+            if dr_ids:
+                assignments = []
+                for pid in pids:
+                    num = random.randint(2, min(3, len(dr_ids)))
+                    for d_id in random.sample(dr_ids, num):
+                        assignments.append((pid, d_id))
+                cur.executemany("INSERT INTO patient_doctors (patient_id, doctor_id) VALUES (?, ?)", assignments)
+
+            print("Initializing nurses table...")
+            cur.execute("CREATE TABLE IF NOT EXISTS nurses (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+            cur.execute("DELETE FROM nurses")
+            sample_nurses = [
+                (1001, "Elena Fischer"),
+                (1002, "Marcus Weber"),
+                (1003, "Julia Baumgartner"),
+                (1004, "Thomas Herzog"),
+                (1005, "Sarah Schneider"),
+            ]
+            cur.executemany("INSERT INTO nurses (id, name) VALUES (?, ?)", sample_nurses)
+
+            conn.commit()
+            conn.close()
+            print("init_db success.")
+            return {"ok": True, "db_path": str(DB_PATH)}
+        except sqlite3.OperationalError as e:
+            if "database is locked" in str(e) and attempt < max_retries - 1:
+                print(f"Database locked, retrying (attempt {attempt + 1})...")
+                time.sleep(1)
+                continue
+            print(f"init_db OperationalError: {e}")
+            raise HTTPException(status_code=500, detail=f"Database error: {e}")
+        except Exception as e:
+            print(f"init_db ERROR: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
 
 #-- Fetch data endpoints ---
 @app.get("/doktores_db")
@@ -934,7 +925,7 @@ async def doktores_db():
 #-- Fetch data endpoints ---
 @app.get("/patients_db")
 async def patients_db():
-    """Fetch patients from the DB, including their unique code."""
+    """Fetch patients from the DB, including their unique code and assigned doctors."""
     if not DB_PATH.exists():
         raise HTTPException(status_code=500, detail="Database not initialized. POST /init_db first.")
     conn = sqlite3.connect(str(DB_PATH))
@@ -944,7 +935,54 @@ async def patients_db():
         cur.execute("SELECT id, code, name, address, age, conditions FROM patients ORDER BY id")
         rows = cur.fetchall()
         result = [dict(r) for r in rows]
+        
+        # for each patient, fetch assigned doctors
+        for p in result:
+            cur.execute("""
+                SELECT d.id, d.name, d.specialty, d.email 
+                FROM doktores d
+                JOIN patient_doctors pd ON d.id = pd.doctor_id
+                WHERE pd.patient_id = ?
+            """, (p['id'],))
+            p['doctors'] = [dict(r) for r in cur.fetchall()]
+            
         return {"patients": result}
+    finally:
+        conn.close()
+
+@app.get("/patient_doctors_db")
+async def patient_doctors_db():
+    """Fetch all patient-doctor assignments."""
+    if not DB_PATH.exists():
+        raise HTTPException(status_code=500, detail="Database not initialized. POST /init_db first.")
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT pd.patient_id, p.name as patient_name, pd.doctor_id, d.name as doctor_name
+            FROM patient_doctors pd
+            JOIN patients p ON pd.patient_id = p.id
+            JOIN doktores d ON pd.doctor_id = d.id
+        """)
+        rows = cur.fetchall()
+        return {"assignments": [dict(r) for r in rows]}
+    finally:
+        conn.close()
+
+@app.get("/nurses_db")
+async def nurses_db():
+    """Fetch nurses from the DB."""
+    if not DB_PATH.exists():
+        raise HTTPException(status_code=500, detail="Database not initialized. POST /init_db first.")
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT id, name FROM nurses ORDER BY id")
+        rows = cur.fetchall()
+        result = [dict(r) for r in rows]
+        return {"nurses": result}
     finally:
         conn.close()
 
@@ -965,6 +1003,48 @@ async def users_db():
     finally:
         conn.close()
 
+@app.get("/messages_db")
+async def messages_db(client_id: str | None = None):
+    """Fetch chat messages from SQLite, optionally filtered by client_id."""
+    if not DB_PATH.exists():
+        raise HTTPException(status_code=500, detail="Database not initialized. POST /init_db first.")
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    try:
+        if client_id:
+            cur.execute("SELECT * FROM chat_messages WHERE client_id = ? ORDER BY created_at ASC", (client_id,))
+        else:
+            cur.execute("SELECT * FROM chat_messages ORDER BY created_at ASC")
+        rows = cur.fetchall()
+        return {"messages": [dict(r) for r in rows]}
+    finally:
+        conn.close()
+
+@app.post("/messages_db")
+async def save_message_db(msg: MessageSchema):
+    """Save a new chat message to SQLite."""
+    if not DB_PATH.exists():
+        raise HTTPException(status_code=500, detail="Database not initialized. POST /init_db first.")
+    conn = sqlite3.connect(str(DB_PATH))
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            INSERT INTO chat_messages 
+            (client_id, sender_id, recipient_id, content, message_type, is_important, due_date, status, file_path, file_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (msg.client_id, msg.sender_id, msg.recipient_id, msg.content, msg.message_type, 1 if msg.is_important else 0, msg.due_date, msg.status, msg.file_path, msg.file_name))
+        new_id = cur.lastrowid
+        conn.commit()
+        
+        # Fetch the newly created message to return it
+        cur.row_factory = sqlite3.Row
+        cur.execute("SELECT * FROM chat_messages WHERE id = ?", (new_id,))
+        row = cur.fetchone()
+        return dict(row)
+    finally:
+        conn.close()
+
 #-- Example PDFs generation endpoint ---
 @app.post("/examples/init")
 async def examples_init():
@@ -978,11 +1058,11 @@ async def examples_init():
         path = EXAMPLES_DIR / f"example_{i}.pdf"
         buf_path = str(path)
         c = canvas.Canvas(buf_path)
-        c.setTitle(f"Example {i}")
+        c.setTitle(f"Beispiel {i}")
         c.setFont("Helvetica-Bold", 20)
-        c.drawString(72, 750, f"Example PDF {i}")
+        c.drawString(72, 750, f"Beispiel PDF {i}")
         c.setFont("Helvetica", 12)
-        c.drawString(72, 720, "This is a sample PDF generated for examples.")
+        c.drawString(72, 720, "Dies ist ein Beispiel-PDF, das für Demonstrationszwecke erstellt wurde.")
         c.save()
 
     return {"ok": True, "examples_dir": str(EXAMPLES_DIR)}
@@ -1162,13 +1242,13 @@ async def populate_emails(count: int = 5):
         # always generate exactly 5 example emails as requested
         count = 5
         topics = [
-            "Medication change",
-            "Prescription refill",
-            "Lab result review",
-            "Medication question",
-            "Follow-up: medication",
-            "Therapy adjustment",
-            "Request: dosage clarification",
+            "Medikamentenumstellung",
+            "Rezeptnachbestellung",
+            "Überprüfung Laborergebnisse",
+            "Frage zur Medikation",
+            "Follow-up: Medikation",
+            "Therapieanpassung",
+            "Anfrage: Klärung Dosierung",
         ]
         for i in range(count):
             pid, pcode = random.choice(patients)
@@ -1250,20 +1330,20 @@ async def populate_emails(count: int = 5):
                 "Bitte beachten Sie die Hinweise in der Anlage.",
                 "Nur zur Info, keine Aktion erforderlich.",
                 "Falls Rückfragen, melden Sie sich bitte.",
-                "Lorem ipsum dolor sit amet, consectetur adipiscing elit.",
+                "Dies ist ein Platzhaltertext für medizinische Dokumentation.",
                 "Zusätzliche Anmerkungen: Dies ist ein Beispiel.",
-                "Random ref: " + uuid.uuid4().hex[:6]
+                "Referenzcode: " + uuid.uuid4().hex[:6]
             ]
             extra = "\n".join(random.sample(fillers, k=random.randint(1, 2)))
 
             body_lines = [
-                f"Doctor: {dr_name} <{dr_email}>",
-                f"Patient Name: {patient_name}",
-                f"Patient ID: {patient_code or pid}",
+                f"Arzt: {dr_name} <{dr_email}>",
+                f"Patientenname: {patient_name}",
+                f"Patienten-ID: {patient_code or pid}",
             ]
             body_lines.append("")
-            body_lines.append(f"{topic} regarding the above patient.")
-            body_lines.append(f"Requested by: {deadline_str}")
+            body_lines.append(f"{topic} bezüglich des oben genannten Patienten.")
+            body_lines.append(f"Angefordert bis: {deadline_str}")
             if is_urgent:
                 body_lines.append("Bitte dringend bearbeiten.")
             body_lines.append("")
@@ -1821,9 +1901,9 @@ async def create_patient_samples(count: int = 5):
             csv_name = f"{base}.csv"
             csv_path = samples_dir / csv_name
             rows = [
-                ["Patient Name", "Patient ID", "Drug", "Dosage", "Qty", "Doctor", "Notes"],
-                [name, pid, "Aspirin", "100mg", "30", doc_name, "Sample prescription. Ignore extraneous text."],
-                [name, pid, "Paracetamol", "500mg", "20", doc_name, f"For testing only. RNG:{uuid.uuid4().hex[:6]}"]
+                ["Patientenname", "Patienten-ID", "Medikament", "Dosierung", "Anzahl", "Arzt", "Anmerkungen"],
+                [name, pid, "Aspirin", "100mg", "30", doc_name, "Beispielrezept. Ignorieren Sie Extratext."],
+                [name, pid, "Paracetamol", "500mg", "20", doc_name, f"Nur für Testzwecke. RNG:{uuid.uuid4().hex[:6]}"]
             ]
             with csv_path.open('w', newline='', encoding='utf-8') as cf:
                 w = csv.writer(cf)
@@ -1834,14 +1914,14 @@ async def create_patient_samples(count: int = 5):
             txt_name = f"{base}.txt"
             txt_path = samples_dir / txt_name
             txt_content = (
-                f"Prescription for {name} (id: {pid})\n"
-                f"Prescribed by: {doc_name}\n"
+                f"Rezept für {name} (ID: {pid})\n"
+                f"Verschrieben von: {doc_name}\n"
                 "- Aspirin 100mg 30\n"
                 "- Paracetamol 500mg 20\n"
-                "\nNote: This is example data for testing purposes. Please ignore any extra lines that follow.\n"
-                f"Reference: {uuid.uuid4().hex[:8]}\n"
+                "\nHinweis: Dies sind Beispieldaten für Testzwecke. Bitte ignorieren Sie zusätzliche Zeilen.\n"
+                f"Referenz: {uuid.uuid4().hex[:8]}\n"
                 "---\n"
-                "Additional unneeded text: Lorem ipsum dolor sit amet, consectetur adipiscing elit.\n"
+                "Zusätzlicher Text: Dies ist ein Beispiel-Dokument.\n"
             )
             txt_path.write_text(txt_content, encoding='utf-8')
 
@@ -1850,11 +1930,11 @@ async def create_patient_samples(count: int = 5):
             pdf_path = samples_dir / pdf_name
             if canvas:
                 c = canvas.Canvas(str(pdf_path))
-                c.drawString(72, 750, f"Prescription for {name} (id: {pid})")
-                c.drawString(72, 732, f"Prescribed by: {doc_name}")
+                c.drawString(72, 750, f"Rezept für {name} (ID: {pid})")
+                c.drawString(72, 732, f"Verschrieben von: {doc_name}")
                 c.drawString(72, 712, "- Aspirin 100mg 30")
                 c.drawString(72, 698, "- Paracetamol 500mg 20")
-                c.drawString(72, 660, "Note: For testing only. Ignore additional lines below.")
+                c.drawString(72, 660, "Hinweis: Nur für Testzwecke. Ignorieren Sie zusätzliche Zeilen.")
                 c.drawString(72, 640, f"Ref: {uuid.uuid4().hex[:8]}")
                 c.save()
             else:
@@ -2093,6 +2173,34 @@ async def csv(message: str | None = None, task: str | None = None, csv: str | No
         ]
     )
     return {"response": response.choices[0].message.content}
+
+@app.patch("/messages_db/{message_id}")
+async def update_message_db(message_id: int, data: dict = Body(...)):
+    """Update a chat message's status or other fields."""
+    if not DB_PATH.exists():
+        raise HTTPException(status_code=500, detail="Database not initialized. POST /init_db first.")
+    conn = sqlite3.connect(str(DB_PATH))
+    cur = conn.cursor()
+    try:
+        # Build dynamic update query
+        fields = []
+        values = []
+        for k, v in data.items():
+            if k in ['status', 'is_important', 'content', 'due_date']:
+                fields.append(f"{k} = ?")
+                values.append(v)
+        
+        if not fields:
+            raise HTTPException(status_code=400, detail="No valid fields to update")
+            
+        values.append(message_id)
+        query = f"UPDATE chat_messages SET {', '.join(fields)} WHERE id = ?"
+        cur.execute(query, values)
+        conn.commit()
+        
+        return {"ok": True}
+    finally:
+        conn.close()
 
 @app.post("/Chat")
 async def chat_endpoint(message: str):
